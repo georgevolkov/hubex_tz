@@ -19,9 +19,9 @@ public class WorkTaskUserCacheService : IWorkTaskUserCacheService
    {
       byte assignedTo = 2;
       byte districtAvailable = 13;
+
       var taskAssigned = await _context.TaskOnlineAssigneds
-         .Where(toa => toa.TenantId == tenantId &&
-                       _context.Tasks.Any(t => t.Id == toa.TaskId))
+         .Where(toa => toa.TenantId == tenantId && _context.Tasks.Any(t => t.Id == toa.TaskId))
          .Select(toa => new TaskAssigned
          {
             TaskId = toa.TaskId,
@@ -29,12 +29,14 @@ public class WorkTaskUserCacheService : IWorkTaskUserCacheService
          })
          .ToListAsync();
 
-
-      var taskUserCache = (from ta in taskAssigned
-            let userExists = _context.Users.Any(u => u.Id == ta.AssignedTo)
-            where userExists
-            select new TaskUserCache
-               { TaskId = ta.TaskId, UserId = ta.AssignedTo.Value, TaskListCategoryId = assignedTo })
+      var taskUserCache = taskAssigned
+         .Where(ta => ta.AssignedTo.HasValue && _context.Users.Any(u => u.Id == ta.AssignedTo.Value))
+         .Select(ta => new TaskUserCache
+         {
+            TaskId = ta.TaskId,
+            UserId = ta.AssignedTo.Value,
+            TaskListCategoryId = assignedTo
+         })
          .ToList();
 
       await _context.TaskUserCaches.AddRangeAsync(taskUserCache);
@@ -44,29 +46,26 @@ public class WorkTaskUserCacheService : IWorkTaskUserCacheService
 
       if (_context.UserTaskListCategories.Any(utlc => utlc.TaskListCategoryId == districtAvailable))
       {
-         var distinctTaskUserPairs = new HashSet<(int TaskId, int UserId)>();
+         var distinctTaskUserPairs = taskAssigned
+            .SelectMany(ta => new[] { ta.Task.ApprovalWith, ta.Task.EscalatedTo, ta.AssignedTo })
+            .Where(userId => userId.HasValue)
+            .Select(userId => (taskId: userId.Value, userId: userId.Value))
+            .Distinct()
+            .ToList();
 
-         foreach (var ta in taskAssigned)
-         {
-            if (ta.Task.ApprovalWith != null)
-               distinctTaskUserPairs.Add((ta.TaskId, UserId: ta.Task.ApprovalWith.Value));
-
-            if (ta.Task.EscalatedTo.HasValue)
-               distinctTaskUserPairs.Add((ta.TaskId, UserId: ta.Task.EscalatedTo.Value));
-
-            if (ta.AssignedTo.HasValue)
-               distinctTaskUserPairs.Add((ta.TaskId, UserId: ta.AssignedTo.Value));
-         }
-
-         taskResponsibleUser
-            .AddRange(distinctTaskUserPairs
-               .Select(pair => new TaskResponsibleUser { TaskId = pair.TaskId, UserId = pair.UserId }));
+         taskResponsibleUser.AddRange(distinctTaskUserPairs
+            .Select(pair => new TaskResponsibleUser
+            {
+               TaskId = pair.taskId,
+               UserId = pair.userId
+            }));
       }
 
       await _context.TaskResponsibleUsers.AddRangeAsync(taskResponsibleUser);
       await _context.SaveChangesAsync();
    }
 
+   // TODO тут надо схему БД оптимизировать чтобы понимать как лучше запросы строить
    public async Task TaskUserCacheAggregateResponsibilityAsync (short tenantId)
    {
       const byte AssignedTo = 2;
