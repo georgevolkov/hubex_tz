@@ -29,33 +29,44 @@ public class AdmTaskUserCacheService : IAdmTaskUserCacheService
          .Where(utlc => utlc.TaskListCategoryId == districtAvailable)
          .ToListAsync();
 
-      var taskResponsibleUsers = await _context.TaskResponsibleUsers.ToListAsync();
-      var taskUserCaches = new List<TaskUserCache>();
-
-      foreach (var taskListCategory in userTaskListCategories)
+      if (!userTaskListCategories.Any())
       {
-         foreach (var responsibleUser in taskResponsibleUsers)
-         {
-            var relationExists = await _context.UserDistricts
-               .AnyAsync(_predicateExtensions.HasUserDistrictRelation(tenantId, taskListCategory, responsibleUser));
-
-            if (relationExists)
-            {
-               taskUserCaches.Add(new TaskUserCache
-               {
-                  TaskId = responsibleUser.TaskId,
-                  UserId = taskListCategory.UserId,
-                  TaskListCategoryId = taskListCategory.TaskListCategoryId
-               });
-            }
-         }
+         _logger.LogInformation("No UserTaskListCategories found for districtAvailable {districtAvailable}",
+            districtAvailable);
+         return;
       }
+
+      var taskUserCaches = await _context.TaskResponsibleUsers
+         .Join(_context.UserDistricts,
+            ur => ur.UserId,
+            ud => ud.UserId,
+            (ur, ud) => new { ur, ud })
+         .Where(joined => joined.ud.TenantId == tenantId && joined.ud.Deleted == null)
+         .Where(joined => _context.UserDistricts
+            .Any(ud1 => ud1.TenantId == tenantId &&
+                        ud1.DistrictId == joined.ud.DistrictId &&
+                        ud1.UserId == joined.ur.UserId &&
+                        ud1.Deleted == null))
+         .Join(userTaskListCategories,
+            joined => joined.ud.UserId,
+            utlc => utlc.UserId,
+            (joined, utlc) => new TaskUserCache
+            {
+               TaskId = joined.ur.TaskId,
+               UserId = utlc.UserId,
+               TaskListCategoryId = utlc.TaskListCategoryId
+            })
+         .ToListAsync();
 
       if (taskUserCaches.Any())
       {
          await _context.TaskUserCaches.AddRangeAsync(taskUserCaches);
          await _context.SaveChangesAsync();
          _logger.LogInformation("{taskUserCachesCount} task saved!", taskUserCaches.Count);
+      }
+      else
+      {
+         _logger.LogInformation("No TaskUserCaches to save.");
       }
    }
 }
